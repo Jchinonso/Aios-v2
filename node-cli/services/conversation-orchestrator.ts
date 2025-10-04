@@ -38,6 +38,7 @@ interface ConversationContext {
   state: ConversationState;
   lastIntent: ParsedIntentType | null;
   turnCount: number;
+  currentRecommendations: any[];
 }
 
 /**
@@ -54,7 +55,8 @@ export class ConversationOrchestrator {
   private context: ConversationContext = {
     state: { stage: 'idle' },
     lastIntent: null,
-    turnCount: 0
+    turnCount: 0,
+    currentRecommendations: []
   };
 
   constructor(
@@ -70,12 +72,19 @@ export class ConversationOrchestrator {
     this.context.turnCount++;
     this.context.lastIntent = intent;
 
-    // Handle deployment intent with conversational flow
+    const currentState = this.context.state;
+
+    // If we're in an active conversation (not idle), always handle input
+    if (currentState.stage !== 'idle') {
+      return await this.handleDeploymentConversation(input, intent);
+    }
+
+    // Handle new deployment intent with conversational flow
     if (intent.intent === 'deploy') {
       return await this.handleDeploymentConversation(input, intent);
     }
 
-    // For non-deployment intents, return false to use default handling
+    // For non-deployment intents when idle, return false to use default handling
     return false;
   }
 
@@ -166,20 +175,26 @@ export class ConversationOrchestrator {
     this.output('');
     this.output(chalk.green('Here are my recommendations:'));
 
-    recommendations.slice(0, 3).forEach((rec, idx) => {
+    recommendations.slice(0, 5).forEach((rec, idx) => {
       const prefix = idx === 0 ? chalk.green('(Recommended)') : '';
       this.output(chalk.white(`${idx + 1}. ${rec.provider} ${prefix} - ${rec.reason}`));
     });
 
     this.output('');
     this.output(chalk.blue('Which would you prefer?'));
-    this.output(chalk.gray("(Or ask me: \"What's the cheapest option?\" or \"Tell me more about Vercel\")"));
+    this.output(chalk.gray('You can type:'));
+    this.output(chalk.gray('  - A number (1-5)'));
+    this.output(chalk.gray('  - Provider name (e.g., "vercel" or "netlify")'));
+    this.output(chalk.gray('  - Or ask: "What\'s the cheapest?" or "Tell me more"'));
 
     this.context.state = {
       stage: 'recommendations_shown',
       analysis: analysisResult,
       recommendations
     };
+
+    // Store recommendations for number-to-provider mapping
+    this.context.currentRecommendations = recommendations;
 
     return true;
   }
@@ -421,22 +436,79 @@ export class ConversationOrchestrator {
    * Helper: Extract provider selection from input
    */
   private extractProviderSelection(input: string): CloudProviderType | null {
-    const providers: CloudProviderType[] = ['vercel', 'netlify', 'aws', 'railway', 'render'];
-    const lowerInput = input.toLowerCase();
+    const lowerInput = input.toLowerCase().trim();
 
-    for (const provider of providers) {
-      if (lowerInput.includes(provider)) {
+    // Check for numbers (1-5) - use current recommendations
+    if (/^[1-5]$/.test(lowerInput)) {
+      const index = parseInt(lowerInput) - 1;
+      const recommendation = this.context.currentRecommendations[index];
+      return recommendation?.provider || null;
+    }
+
+    // Check for provider names with fuzzy matching for typos
+    const providerMap: Record<string, CloudProviderType> = {
+      'vercel': 'vercel',
+      'vercl': 'vercel',
+      'versel': 'vercel',
+      'netlify': 'netlify',
+      'netlifly': 'netlify',
+      'netlfy': 'netlify',
+      'aws': 'aws',
+      'amazon': 'aws',
+      'railway': 'railway',
+      'railay': 'railway',
+      'render': 'render',
+      'rendor': 'render'
+    };
+
+    // Exact match or fuzzy match
+    for (const [keyword, provider] of Object.entries(providerMap)) {
+      if (lowerInput.includes(keyword)) {
         return provider;
       }
     }
 
-    // Check for numbers (1-5)
-    if (/^[1-5]$/.test(input.trim())) {
-      const index = parseInt(input.trim()) - 1;
-      return providers[index] || null;
+    // Levenshtein distance for close matches
+    const providers: CloudProviderType[] = ['vercel', 'netlify', 'aws', 'railway', 'render'];
+    for (const provider of providers) {
+      if (this.levenshteinDistance(lowerInput, provider) <= 2) {
+        this.output(chalk.gray(`(Did you mean "${provider}"? Using that.)`));
+        return provider;
+      }
     }
 
     return null;
+  }
+
+  /**
+   * Helper: Calculate Levenshtein distance for fuzzy matching
+   */
+  private levenshteinDistance(a: string, b: string): number {
+    const matrix: number[][] = [];
+
+    for (let i = 0; i <= b.length; i++) {
+      matrix[i] = [i];
+    }
+
+    for (let j = 0; j <= a.length; j++) {
+      matrix[0]![j] = j;
+    }
+
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        if (b.charAt(i - 1) === a.charAt(j - 1)) {
+          matrix[i]![j] = matrix[i - 1]![j - 1]!;
+        } else {
+          matrix[i]![j] = Math.min(
+            matrix[i - 1]![j - 1]! + 1,
+            matrix[i]![j - 1]! + 1,
+            matrix[i - 1]![j]! + 1
+          );
+        }
+      }
+    }
+
+    return matrix[b.length]![a.length]!;
   }
 
   /**
@@ -495,7 +567,8 @@ export class ConversationOrchestrator {
     this.context = {
       state: { stage: 'idle' },
       lastIntent: null,
-      turnCount: 0
+      turnCount: 0,
+      currentRecommendations: []
     };
   }
 
