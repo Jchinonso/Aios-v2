@@ -1,0 +1,38 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": ".",
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "tsBuildInfoFile": "./dist/.tsbuildinfo",
+    "noUnusedLocals": false
+  },
+  "references": [
+    {
+      "path": "../shared"
+    }
+  ],
+  "include": [
+    "*.ts",
+    "chat/**/*",
+    "commands/**/*",
+    "config/**/*",
+    "services/**/*",
+    "handlers/**/*",
+    "utils/**/*",
+    "prompts/**/*",
+    "nl-planner/**/*",
+    "state/**/*",
+    "policy/**/*",
+    "ui/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
+}

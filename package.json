@@ -1,0 +1,94 @@
+{
+  "name": "aios-v2",
+  "version": "0.1.0",
+  "description": "AI-powered DevOps chat assistant - Monorepo with CLI and Web interfaces",
+  "type": "module",
+  "private": true,
+  "workspaces": [
+    "node-cli",
+    "shared"
+  ],
+  "bin": {
+    "aios": "./node-cli/dist/cli.js"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "build:cli": "npm run build -w node-cli",
+    "build:shared": "npm run build -w shared",
+    "dev": "npm run dev -w node-cli",
+    "dev:cli": "npm run dev -w node-cli",
+    "start": "npm run start -w node-cli",
+    "watch": "npm run watch -w node-cli",
+    "clean": "npm run clean --workspaces && rm -rf dist",
+    "type-check": "npm run type-check --workspaces",
+    "lint": "npm run lint --workspaces",
+    "test": "npm run test --workspaces",
+    "install:all": "npm install && npm install --workspaces",
+    "aios": "npm run start -w node-cli",
+    "setup": "npm run install:all && npm run build",
+    "validate:structure": "tsx scripts/validate-structure.ts",
+    "validate:style": "tsx scripts/validate-style.ts",
+    "validate:quality": "tsx scripts/validate-quality.ts",
+    "validate:file-sizes": "tsx scripts/validate-file-sizes.ts",
+    "migrate:structure": "tsx scripts/migrate-structure.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "security:audit": "npm audit --audit-level=moderate",
+    "security:check": "eslint . --ext .ts,.js --config .eslintrc.security.js",
+    "validate:all": "npm run validate:structure && npm run validate:style && npm run validate:quality && npm run security:check && npm run lint && npm run type-check"
+  },
+  "keywords": [
+    "ai",
+    "devops",
+    "cli",
+    "deployment",
+    "cloud",
+    "chat",
+    "assistant",
+    "monorepo",
+    "workspace"
+  ],
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.3",
+    "@aws-sdk/client-ec2": "^3.616.0",
+    "@aws-sdk/client-s3": "^3.616.0",
+    "@vercel/sdk": "^1.0.0",
+    "axios": "^1.7.2",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "inquirer": "^9.3.2",
+    "openai": "^4.52.7",
+    "ora": "^8.0.1"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.7",
+    "@types/node": "^20.14.10",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.0.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-import": "^2.28.0",
+    "eslint-plugin-prettier": "^5.0.0",
+    "eslint-plugin-promise": "^6.1.1",
+    "eslint-plugin-security": "^1.7.1",
+    "eslint-plugin-sonarjs": "^0.21.0",
+    "glob": "^10.4.5",
+    "prettier": "^3.0.0",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=8.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aios-team/aios-v2.git"
+  },
+  "homepage": "https://github.com/aios-team/aios-v2#readme",
+  "bugs": {
+    "url": "https://github.com/aios-team/aios-v2/issues"
+  }
+}

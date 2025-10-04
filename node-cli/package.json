@@ -1,0 +1,67 @@
+{
+  "name": "@aios/cli",
+  "version": "0.1.0",
+  "description": "AIOS CLI - Thin command interface for the intelligence module",
+  "type": "module",
+  "main": "dist/cli.js",
+  "bin": {
+    "aios": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx cli.ts",
+    "start": "node dist/cli.js",
+    "watch": "tsx watch cli.ts",
+    "clean": "rm -rf dist",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint . --ext .ts,.tsx --ignore-pattern node_modules/",
+    "test": "jest",
+    "install-global": "node install.cjs"
+  },
+  "keywords": [
+    "ai",
+    "devops",
+    "cli",
+    "deployment",
+    "cloud",
+    "chat",
+    "assistant"
+  ],
+  "dependencies": {
+    "@aios/shared": "file:../shared",
+    "@inquirer/prompts": "^7.8.6",
+    "@octokit/auth-oauth-device": "^8.0.2",
+    "@octokit/rest": "^22.0.0",
+    "@types/blessed": "^0.1.25",
+    "@types/react": "^19.2.0",
+    "blessed": "^0.1.81",
+    "boxen": "^8.0.1",
+    "chalk": "^5.3.0",
+    "cli-progress": "^3.12.0",
+    "cli-table3": "^0.6.5",
+    "commander": "^12.1.0",
+    "dotenv": "^16.4.5",
+    "gradient-string": "^3.0.0",
+    "ink": "^6.3.1",
+    "ink-text-input": "^6.0.0",
+    "inquirer": "^9.3.2",
+    "ora": "^8.0.1",
+    "react": "^19.2.0",
+    "strip-ansi": "^7.1.2"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.7",
+    "@types/jest": "^29.5.14",
+    "@typescript-eslint/eslint-plugin": "^7.16.0",
+    "@typescript-eslint/parser": "^7.16.0",
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.4.4",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
