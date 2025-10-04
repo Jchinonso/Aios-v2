@@ -58,6 +58,8 @@ export interface ExtractedEntitiesType {
   readonly duration?: string;
   readonly replicas?: number;
   readonly strategy?: DeploymentStrategyType;
+  readonly global?: string; // 'true' if global/worldwide deployment requested
+  readonly urgent?: string; // 'true' if urgent/immediate deployment requested
 }
 
 /**

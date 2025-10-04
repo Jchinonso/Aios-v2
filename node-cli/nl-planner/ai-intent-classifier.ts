@@ -31,10 +31,10 @@ interface CommandMetadata {
  */
 const COMMAND_REGISTRY: Readonly<Record<IntentType, CommandMetadata>> = {
   deploy: {
-    description: 'Deploy application to cloud provider. Use when user wants to push/deploy/ship code to production, staging, or any environment.',
-    examples: ['deploy to production', 'ship to staging', 'push my app'],
+    description: 'Deploy application to cloud provider. Use when user wants to push/deploy/ship code to production, staging, or any environment. Can be global (worldwide CDN) or regional.',
+    examples: ['deploy to production', 'ship to staging', 'push my app', 'deploy globally', 'deploy worldwide'],
     requiredEntities: [],
-    optionalEntities: ['env', 'provider', 'branch']
+    optionalEntities: ['env', 'provider', 'branch', 'global', 'urgent']
   },
 
   rollback: {

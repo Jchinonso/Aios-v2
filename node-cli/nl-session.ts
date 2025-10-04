@@ -1115,8 +1115,19 @@ async function handleDeployIntent(result: ParsedIntentType, session?: BlessedSes
     container.metrics
   );
 
-  const env = result.entities.env || 'staging';
+  const env = result.entities.env || 'production';
   let cloud = result.entities.provider;
+
+  // Check for "deploy globally" or similar urgent deployment commands
+  const isGlobalDeploy = result.entities.global === 'true' || result.entities.urgent === 'true';
+
+  // For global deploys, use Vercel as default (best for global CDN)
+  if (isGlobalDeploy && !cloud) {
+    cloud = 'vercel' as CloudProviderType;
+    if (session) {
+      session.addOutput(chalk.blue('🌍 Global deployment detected - using Vercel for worldwide CDN coverage\n'));
+    }
+  }
 
   // If no provider specified and we have a blessed session, prompt within blessed UI
   if (!cloud && session) {
@@ -1156,7 +1167,7 @@ async function handleDeployIntent(result: ParsedIntentType, session?: BlessedSes
     path: deployPath,
     env: env as 'development' | 'staging' | 'production' | 'preview',
     ...(cloud && { cloud: cloud as CloudProviderType }),
-    autoApprove: false,
+    autoApprove: isGlobalDeploy, // Auto-approve for global deploys
     dryRun: false
   });
 
