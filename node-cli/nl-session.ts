@@ -49,6 +49,9 @@ async function startBlessedSession(options: NLSessionOptionsType = {}): Promise<
   let pendingIntent: ParsedIntentType | null = null;
   let pendingQuestion: string | null = null;
 
+  // Initialize conversation orchestrator for rich multi-turn conversations
+  let conversationOrchestrator: any = null;
+
   await new Promise<void>((resolve) => {
     currentSession = new BlessedSession({
       onInput: async (input: string) => {
@@ -70,6 +73,16 @@ async function startBlessedSession(options: NLSessionOptionsType = {}): Promise<
           if (!aiService) {
             currentSession?.addOutput(chalk.red('❌ AI service not available. Please configure an AI provider.'));
             return;
+          }
+
+          // Initialize conversation orchestrator on first use
+          if (!conversationOrchestrator) {
+            const { ConversationOrchestrator } = await import('./services/conversation-orchestrator.js');
+            conversationOrchestrator = new ConversationOrchestrator(
+              container.cloudManager,
+              container.logger,
+              currentSession
+            );
           }
 
           // Check if we're waiting for an answer to a clarifying question
@@ -139,11 +152,21 @@ Respond with JSON format:
             }
           }
 
-          // Show thinking indicator
-          currentSession?.addOutput(chalk.gray('🤔 Analyzing your request...'));
-
           // Classify intent with full entity extraction
           const result = await classifyIntentWithAI(input, aiService);
+
+          // Check if conversation orchestrator can handle this (for deployment flows)
+          const orchestratorHandled = await conversationOrchestrator.processInput(input, result);
+
+          if (orchestratorHandled) {
+            // Conversation orchestrator handled the interaction
+            return;
+          }
+
+          // Fall back to standard processing for non-conversational intents
+
+          // Show thinking indicator
+          currentSession?.addOutput(chalk.gray('🤔 Analyzing your request...'));
 
           // Show what we understood
           const confidenceColor = result.confidence > 0.8 ? chalk.green : result.confidence > 0.5 ? chalk.yellow : chalk.red;
