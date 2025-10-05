@@ -116,6 +116,16 @@ export class ConversationOrchestrator {
       if (selectedProvider) {
         return await this.confirmProviderSelection(selectedProvider, currentState.analysis);
       }
+
+      // If we couldn't extract a provider but we're in recommendations stage,
+      // provide helpful guidance instead of falling back
+      this.output(chalk.yellow('\n❓ I didn\'t catch which provider you want.'));
+      this.output(chalk.gray('Please choose one of:'));
+      currentState.recommendations.slice(0, 5).forEach((rec, idx) => {
+        this.output(chalk.white(`  ${idx + 1}. ${rec.provider}`));
+      });
+      this.output(chalk.gray('\nOr ask me about pricing or details!'));
+      return true; // We handled it
     }
 
     if (currentState.stage === 'awaiting_provider_choice') {
@@ -123,6 +133,11 @@ export class ConversationOrchestrator {
       if (selectedProvider && 'analysis' in currentState) {
         return await this.confirmProviderSelection(selectedProvider, currentState.analysis);
       }
+
+      // Same helpful guidance for awaiting_provider_choice
+      this.output(chalk.yellow('\n❓ Please select a provider from the list above.'));
+      this.output(chalk.gray('You can type a number (1-5) or a provider name.'));
+      return true;
     }
 
     // Stage 3: User confirming deployment
@@ -438,11 +453,22 @@ export class ConversationOrchestrator {
   private extractProviderSelection(input: string): CloudProviderType | null {
     const lowerInput = input.toLowerCase().trim();
 
+    // Remove common command words to extract just the provider name
+    const cleanedInput = lowerInput
+      .replace(/^(use|deploy\s+to|deploy|choose|select|i\s+want|go\s+with|let's\s+use)\s+/i, '')
+      .trim();
+
     // Check for numbers (1-5) - use current recommendations
-    if (/^[1-5]$/.test(lowerInput)) {
-      const index = parseInt(lowerInput) - 1;
-      const recommendation = this.context.currentRecommendations[index];
-      return recommendation?.provider || null;
+    if (/^[1-5]$/.test(cleanedInput) || /^[1-5]$/.test(lowerInput)) {
+      const numMatch = cleanedInput.match(/^[1-5]$/) || lowerInput.match(/^[1-5]$/);
+      if (numMatch) {
+        const index = parseInt(numMatch[0]) - 1;
+        const recommendation = this.context.currentRecommendations[index];
+        if (recommendation) {
+          this.logger.debug('Selected provider by number', { index, provider: recommendation.provider });
+          return recommendation.provider;
+        }
+      }
     }
 
     // Check for provider names with fuzzy matching for typos
@@ -461,19 +487,25 @@ export class ConversationOrchestrator {
       'rendor': 'render'
     };
 
-    // Exact match or fuzzy match
-    for (const [keyword, provider] of Object.entries(providerMap)) {
-      if (lowerInput.includes(keyword)) {
-        return provider;
+    // Try cleaned input first, then original
+    for (const testInput of [cleanedInput, lowerInput]) {
+      // Exact match or fuzzy match
+      for (const [keyword, provider] of Object.entries(providerMap)) {
+        if (testInput.includes(keyword)) {
+          this.logger.debug('Selected provider by name', { keyword, provider });
+          return provider;
+        }
       }
     }
 
     // Levenshtein distance for close matches
     const providers: CloudProviderType[] = ['vercel', 'netlify', 'aws', 'railway', 'render'];
-    for (const provider of providers) {
-      if (this.levenshteinDistance(lowerInput, provider) <= 2) {
-        this.output(chalk.gray(`(Did you mean "${provider}"? Using that.)`));
-        return provider;
+    for (const testInput of [cleanedInput, lowerInput]) {
+      for (const provider of providers) {
+        if (this.levenshteinDistance(testInput, provider) <= 2) {
+          this.output(chalk.gray(`(Did you mean "${provider}"? Using that.)`));
+          return provider;
+        }
       }
     }
 
