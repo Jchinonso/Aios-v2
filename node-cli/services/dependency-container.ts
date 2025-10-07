@@ -119,6 +119,7 @@ export interface ServiceContainer {
   readonly metrics: IMetricsCollector;
   readonly intelligence: EnhancedIntelligenceOrchestrator | null;
   readonly cloudManager: CloudManager;
+  readonly nlProcessor: (() => ReturnType<typeof import('./enhanced-nl-factory.js').EnhancedNLProcessorFactory.create>) | null;
 }
 
 /**
@@ -152,6 +153,22 @@ export class DependencyContainer {
   get cloudManager(): CloudManager {
     this.ensureNotDisposed();
     return this.services.cloudManager;
+  }
+
+  /**
+   * Get EnhancedNLProcessor (lazy-initialized)
+   *
+   * Returns null if AI service is not available.
+   * Processor is created on first access and reused.
+   */
+  get nlProcessor(): ReturnType<typeof import('./enhanced-nl-factory.js').EnhancedNLProcessorFactory.create> | null {
+    this.ensureNotDisposed();
+
+    if (!this.services.nlProcessor) {
+      return null;
+    }
+
+    return this.services.nlProcessor();
   }
 
   /**
@@ -349,13 +366,45 @@ export class DependencyContainer {
     // 4. Initialize Cloud Manager
     const cloudManager = createCloudManager();
 
+    // 5. Create EnhancedNLProcessor factory (lazy initialization)
+    // Only create if AI service is available (intelligence exists)
+    let nlProcessorFactory: (() => ReturnType<typeof import('./enhanced-nl-factory.js').EnhancedNLProcessorFactory.create>) | null = null;
+
+    if (intelligence) {
+      // Capture intelligence in closure for factory
+      const intelligenceRef = intelligence;
+
+      // Create cached instance for singleton pattern
+      let processorInstance: ReturnType<typeof import('./enhanced-nl-factory.js').EnhancedNLProcessorFactory.create> | null = null;
+
+      nlProcessorFactory = (): ReturnType<typeof import('./enhanced-nl-factory.js').EnhancedNLProcessorFactory.create> => {
+        if (!processorInstance) {
+          // Dynamic import to avoid circular dependencies
+          const { EnhancedNLProcessorFactory } = require('./enhanced-nl-factory.js');
+
+          processorInstance = EnhancedNLProcessorFactory.create(
+            intelligenceRef.getAIService(),
+            logger,
+            undefined // Don't pass metrics - ConversationMemory has different metrics interface
+          );
+
+          logger.debug('EnhancedNLProcessor initialized with multi-turn context awareness');
+          metrics.increment('aios.nl_processor.initialized');
+        }
+
+        // processorInstance is guaranteed to be non-null here
+        return processorInstance!;
+      };
+    }
+
     metrics.increment('aios.startup.success');
 
     return new DependencyContainer({
       logger,
       metrics,
       intelligence,
-      cloudManager
+      cloudManager,
+      nlProcessor: nlProcessorFactory
     });
   }
 

@@ -10,6 +10,42 @@ AIOS v2 is an AI-powered DevOps assistant providing conversational infrastructur
 
 The system enables natural language deployment to multiple cloud providers (Vercel, Netlify, AWS, Railway, Render) with automatic project analysis and intelligent recommendations.
 
+### Phase 3 - Action Reasoning & Explanation (NEW)
+
+**Status**: ✅ Production Ready (October 2025)
+
+AIOS now provides **transparent AI decision-making** with:
+- **Automatic Tracking**: Every deployment decision recorded with full reasoning
+- **Natural Language Explanations**: Ask "why?" to understand AI recommendations
+- **Intelligent Alternatives**: See other options with pros/cons and confidence scores
+- **Persistent History**: All decisions saved to `.aios/reasoning/` for audit trails
+
+**Key Features**:
+- Branded types for type-safe weights and confidence scores
+- Discriminated unions for polymorphic reasoning structures
+- LRU cache with disk persistence for recovery
+- 115/115 core tests passing with 92-95% coverage
+
+**Documentation**:
+- **User Guide**: `docs/PHASE_3_USER_GUIDE.md` - How to use explain commands
+- **API Reference**: `docs/PHASE_3_API_REFERENCE.md` - Programmatic usage
+- **Architecture**: `docs/PHASE_3_ARCHITECTURE.md` - Technical design details
+
+**Example Usage**:
+```bash
+# Deploy with automatic reasoning tracking
+aios cloud deploy
+
+# Ask why
+aios explain
+
+# See alternatives
+aios explain alternatives
+
+# Ask specific questions
+aios explain "why vercel?"
+```
+
 ### AIOS-Shell Vision (Future Roadmap)
 
 The project is evolving toward **AIOS-Shell** - a provider-agnostic DevOps orchestrator with:
@@ -268,7 +304,15 @@ npm run test -w node-cli
 
 ## Key Documentation
 
-- `AIOS_SHELL_ROADMAP.md` - **[NEW]** Complete implementation roadmap for PRD features
+### Phase 3 - Action Reasoning (October 2025)
+- `docs/PHASE_3_USER_GUIDE.md` - **[NEW]** End-user guide for explain commands and alternatives
+- `docs/PHASE_3_API_REFERENCE.md` - **[NEW]** Complete API reference with examples
+- `docs/PHASE_3_ARCHITECTURE.md` - **[NEW]** Technical architecture and design patterns
+- `docs/PHASE_3_TESTS_COMPLETE.md` - Test suite summary (115/115 core tests passing)
+- `docs/PHASE_3_FINAL_AUDIT.md` - Code quality audit (zero issues found)
+
+### Core Documentation
+- `AIOS_SHELL_ROADMAP.md` - Complete implementation roadmap for PRD features
 - `shared/cloud/README.md` - Cloud module deep dive
 - `shared/cloud/EXTENSIBILITY.md` - Adding new operations (40+ operation types)
 - `shared/cloud/API.md` - CloudManager API reference

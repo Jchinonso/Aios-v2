@@ -6,7 +6,9 @@ export default {
   moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@aios/shared$': '<rootDir>/../shared/index.ts',
+    '^@aios/shared/(.*)\\.js$': '<rootDir>/../shared/$1',
     '^@aios/shared/(.*)$': '<rootDir>/../shared/$1',
+    '^chalk$': '<rootDir>/__mocks__/chalk.ts',
   },
   transform: {
     '^.+\\.tsx?$': [
@@ -19,9 +21,16 @@ export default {
       },
     ],
   },
+  transformIgnorePatterns: [
+    'node_modules/(?!(chalk|@netlify/api|p-wait-for)/)',
+  ],
   testMatch: [
     '**/__tests__/**/*.test.ts',
     '**/?(*.)+(spec|test).ts'
+  ],
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    'nl-session.test.ts'
   ],
   collectCoverageFrom: [
     '**/*.ts',

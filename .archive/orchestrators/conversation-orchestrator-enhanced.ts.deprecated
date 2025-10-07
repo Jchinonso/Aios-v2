@@ -1,0 +1,623 @@
+/**
+ * @fileoverview Enhanced Conversation Orchestrator with Memory Integration (Phase 1.3)
+ * @description Extends ConversationOrchestrator with session persistence and learned preferences
+ * @module node-cli/services
+ *
+ * Phase 1.3 Enhancements:
+ * - Session lifecycle management (create, load, save, delete)
+ * - Auto-save after each conversation turn
+ * - Auto-resume most recent session on startup
+ * - Memory-enhanced recommendations using learned preferences
+ * - Graceful degradation if persistence unavailable
+ *
+ * @version 3.0.0
+ * @since 2025-10-05
+ */
+
+import type { ILogger } from '@aios/shared';
+import { ConversationMemory } from './conversation-memory.v2.js';
+import type { ConversationTurn, UserPreference } from './conversation-memory.v2.js';
+import type { SessionPersistence } from './session-persistence.js';
+import type { Result } from './session-persistence.js';
+import type { SessionMetadata } from './session-persistence.js';
+
+/**
+ * Memory integration options for ConversationOrchestrator
+ */
+export interface MemoryIntegrationOptions {
+  /** ConversationMemory instance for preference learning */
+  readonly memory: ConversationMemory;
+  /** SessionPersistence instance for saving/loading sessions (optional for graceful degradation) */
+  readonly persistence?: SessionPersistence;
+  /** Auto-save after each turn (default: true) */
+  readonly autoSave?: boolean;
+  /** Debounce delay for auto-save in ms (default: 500ms) */
+  readonly autoSaveDebounceMs?: number;
+}
+
+/**
+ * Session resume result
+ */
+export interface SessionResumeResult {
+  /** Whether a session was resumed */
+  readonly resumed: boolean;
+  /** ID of resumed session (null if not resumed) */
+  readonly sessionId: string | null;
+  /** Number of turns in resumed session */
+  readonly turnCount?: number;
+}
+
+/**
+ * Project context for session
+ */
+export interface ProjectContext {
+  readonly path: string;
+  readonly framework?: string;
+  readonly language?: string;
+  readonly [key: string]: unknown;
+}
+
+/**
+ * Memory integration mixin for ConversationOrchestrator
+ *
+ * Provides session persistence and memory-enhanced conversation management.
+ * Follows Single Responsibility Principle - this module ONLY handles memory integration.
+ *
+ * @example
+ * ```typescript
+ * const memory = new ConversationMemory(logger);
+ * const persistence = new SessionPersistence(logger);
+ * const orchestrator = new ConversationOrchestrator(
+ *   cloudManager,
+ *   logger,
+ *   session,
+ *   { memory, persistence, autoSave: true }
+ * );
+ *
+ * // Auto-resume on startup
+ * await orchestrator.autoResumeSession();
+ *
+ * // Record turns (auto-saved)
+ * await orchestrator.recordTurn({
+ *   userInput: 'deploy to production',
+ *   intent: { ... },
+ *   response: 'Deploying...',
+ *   timestamp: new Date().toISOString()
+ * });
+ *
+ * // Access learned preferences
+ * const preferences = orchestrator.getMemory().getPreferences('provider');
+ * ```
+ */
+export class ConversationOrchestratorMemoryMixin {
+  private currentSessionId: string | null = null;
+  private autoSaveTimer: NodeJS.Timeout | null = null;
+  private pendingAutoSave = false;
+
+  constructor(
+    private readonly memory: ConversationMemory,
+    private readonly persistence: SessionPersistence | undefined,
+    private readonly logger: ILogger,
+    private readonly options: {
+      readonly autoSave: boolean;
+      readonly autoSaveDebounceMs: number;
+    }
+  ) {}
+
+  // ========================================
+  // Session Lifecycle Management
+  // ========================================
+
+  /**
+   * Get or create a new session
+   *
+   * If no current session exists, generates a unique session ID.
+   * Session IDs follow format: `session-${timestamp}-${random}`
+   *
+   * @returns Session ID
+   *
+   * @example
+   * ```typescript
+   * const sessionId = await orchestrator.getOrCreateSession();
+   * console.log('Session:', sessionId); // "session-1696520400000-abc123"
+   * ```
+   */
+  public async getOrCreateSession(): Promise<string> {
+    if (this.currentSessionId) {
+      return this.currentSessionId;
+    }
+
+    // Generate unique session ID
+    this.currentSessionId = this.generateSessionId();
+    this.logger.info('Created new session', { sessionId: this.currentSessionId });
+
+    return this.currentSessionId;
+  }
+
+  /**
+   * Get current session ID
+   *
+   * @returns Current session ID or null if no active session
+   */
+  public getCurrentSessionId(): string | null {
+    return this.currentSessionId;
+  }
+
+  /**
+   * Load an existing session by ID
+   *
+   * Loads session snapshot from persistence and restores conversation memory.
+   * Returns error if session not found or corrupted.
+   *
+   * @param sessionId - Session identifier
+   * @returns Result with success/failure
+   *
+   * @example
+   * ```typescript
+   * const result = await orchestrator.loadSession('session-123');
+   * if (result.isSuccess) {
+   *   console.log('Loaded session with', orchestrator.getTurnCount(), 'turns');
+   * }
+   * ```
+   */
+  public async loadSession(sessionId: string): Promise<Result<void>> {
+    if (!this.persistence) {
+      const error = new Error('Persistence not available - cannot load session');
+      this.logger.warn('Load session failed: no persistence', { sessionId });
+      return { isSuccess: false, isFailure: true, error };
+    }
+
+    try {
+      // Load snapshot from persistence
+      const loadResult = await this.persistence.loadSession(sessionId);
+
+      if (loadResult.isFailure) {
+        return loadResult;
+      }
+
+      const snapshot = loadResult.value!;
+
+      // Restore memory from snapshot (V2 requires logger and optional metrics)
+      const restoredMemory = ConversationMemory.fromSnapshot(snapshot, this.logger, undefined);
+
+      // Replace current memory with loaded memory
+      Object.assign(this.memory, restoredMemory);
+
+      this.currentSessionId = sessionId;
+      this.logger.info('Loaded session successfully', {
+        sessionId,
+        turnCount: snapshot.turns.length,
+        preferenceCount: snapshot.preferences.length
+      });
+
+      return { isSuccess: true, isFailure: false, value: undefined };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error('Failed to load session', error, { sessionId });
+      return { isSuccess: false, isFailure: true, error };
+    }
+  }
+
+  /**
+   * Save current session to persistence
+   *
+   * Saves conversation memory snapshot to disk. Safe to call repeatedly.
+   * If persistence unavailable, logs warning but doesn't throw.
+   *
+   * @returns Result with success/failure
+   *
+   * @example
+   * ```typescript
+   * await orchestrator.recordTurn({ ... });
+   * const result = await orchestrator.saveSession();
+   * ```
+   */
+  public async saveSession(): Promise<Result<void>> {
+    if (!this.persistence) {
+      this.logger.debug('Persistence not available - skipping save');
+      return { isSuccess: true, isFailure: false, value: undefined };
+    }
+
+    if (!this.currentSessionId) {
+      this.currentSessionId = this.generateSessionId();
+    }
+
+    try {
+      const snapshot = this.memory.toSnapshot();
+      const saveResult = await this.persistence.saveSession(this.currentSessionId, snapshot);
+
+      if (saveResult.isFailure) {
+        this.logger.warn('Session save failed', saveResult.error, { sessionId: this.currentSessionId });
+        return saveResult;
+      }
+
+      this.logger.debug('Session saved successfully', {
+        sessionId: this.currentSessionId,
+        turnCount: snapshot.turns.length
+      });
+
+      return { isSuccess: true, isFailure: false, value: undefined };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error('Failed to save session', error, { sessionId: this.currentSessionId });
+      return { isSuccess: false, isFailure: true, error };
+    }
+  }
+
+  /**
+   * Delete a session by ID
+   *
+   * Removes session from persistence. If the deleted session is the current session,
+   * clears current session ID and resets memory.
+   *
+   * @param sessionId - Session to delete
+   * @returns Result with success/failure
+   *
+   * @example
+   * ```typescript
+   * await orchestrator.deleteSession('old-session-id');
+   * ```
+   */
+  public async deleteSession(sessionId: string): Promise<Result<void>> {
+    if (!this.persistence) {
+      const error = new Error('Persistence not available - cannot delete session');
+      return { isSuccess: false, isFailure: true, error };
+    }
+
+    try {
+      const deleteResult = await this.persistence.deleteSession(sessionId);
+
+      if (deleteResult.isFailure) {
+        return deleteResult;
+      }
+
+      // If deleting current session, clear it
+      if (sessionId === this.currentSessionId) {
+        this.currentSessionId = null;
+        // Clear memory (don't create new instance, just clear data)
+        this.memory.clear();
+      }
+
+      this.logger.info('Session deleted successfully', { sessionId });
+      return { isSuccess: true, isFailure: false, value: undefined };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error('Failed to delete session', error, { sessionId });
+      return { isSuccess: false, isFailure: true, error };
+    }
+  }
+
+  // ========================================
+  // Auto-Save & Auto-Resume
+  // ========================================
+
+  /**
+   * Auto-resume most recent session on startup
+   *
+   * Finds the most recent resumable session (< 24 hours old) and loads it.
+   * If no resumable sessions, returns success with resumed=false.
+   *
+   * @returns Result with session resume details
+   *
+   * @example
+   * ```typescript
+   * const result = await orchestrator.autoResumeSession();
+   * if (result.isSuccess && result.value.resumed) {
+   *   console.log('Resumed session:', result.value.sessionId);
+   * }
+   * ```
+   */
+  public async autoResumeSession(): Promise<Result<SessionResumeResult>> {
+    if (!this.persistence) {
+      this.logger.debug('Persistence not available - skipping auto-resume');
+      return {
+        isSuccess: true,
+        isFailure: false,
+        value: { resumed: false, sessionId: null }
+      };
+    }
+
+    try {
+      // Get most recent resumable session
+      const resumableResult = await this.persistence.getMostRecentResumableSession();
+
+      if (resumableResult.isFailure) {
+        return {
+          isSuccess: true,
+          isFailure: false,
+          value: { resumed: false, sessionId: null }
+        };
+      }
+
+      const resumable = resumableResult.value;
+
+      if (!resumable) {
+        this.logger.debug('No resumable sessions found');
+        return {
+          isSuccess: true,
+          isFailure: false,
+          value: { resumed: false, sessionId: null }
+        };
+      }
+
+      // Load the resumable session
+      const loadResult = await this.loadSession(resumable.sessionId);
+
+      if (loadResult.isFailure) {
+        this.logger.warn('Failed to resume session', loadResult.error, { sessionId: resumable.sessionId });
+        return {
+          isSuccess: true,
+          isFailure: false,
+          value: { resumed: false, sessionId: null }
+        };
+      }
+
+      const turnCount = this.memory.getTurns().length;
+
+      this.logger.info('Auto-resumed session', {
+        sessionId: resumable.sessionId,
+        turnCount
+      });
+
+      return {
+        isSuccess: true,
+        isFailure: false,
+        value: {
+          resumed: true,
+          sessionId: resumable.sessionId,
+          turnCount
+        }
+      };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.logger.error('Auto-resume failed', error);
+      return {
+        isSuccess: true,
+        isFailure: false,
+        value: { resumed: false, sessionId: null }
+      };
+    }
+  }
+
+  /**
+   * Trigger auto-save with debouncing
+   *
+   * Debounces rapid saves to avoid excessive disk I/O.
+   * Safe to call frequently - will only save once after debounce period.
+   *
+   * @private
+   */
+  private triggerAutoSave(): void {
+    if (!this.options.autoSave || !this.persistence) {
+      return;
+    }
+
+    // Clear existing timer
+    if (this.autoSaveTimer) {
+      clearTimeout(this.autoSaveTimer);
+    }
+
+    // Set new timer
+    this.autoSaveTimer = setTimeout(async () => {
+      if (this.pendingAutoSave) {
+        return; // Already saving
+      }
+
+      this.pendingAutoSave = true;
+      try {
+        await this.saveSession();
+      } catch (err) {
+        this.logger.warn('Auto-save failed', err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        this.pendingAutoSave = false;
+        this.autoSaveTimer = null;
+      }
+    }, this.options.autoSaveDebounceMs);
+  }
+
+  // ========================================
+  // Memory Integration
+  // ========================================
+
+  /**
+   * Record a conversation turn
+   *
+   * Adds turn to memory and triggers auto-save if enabled.
+   *
+   * @param turn - Conversation turn to record
+   *
+   * @example
+   * ```typescript
+   * await orchestrator.recordTurn({
+   *   userInput: 'deploy to vercel',
+   *   intent: { intent: 'deploy', ... },
+   *   response: 'Deploying to Vercel...',
+   *   timestamp: new Date().toISOString()
+   * });
+   * ```
+   */
+  public async recordTurn(turn: ConversationTurn): Promise<void> {
+    await this.getOrCreateSession(); // Ensure session exists
+
+    this.memory.addTurn(turn);
+
+    this.logger.debug('Recorded conversation turn', {
+      sessionId: this.currentSessionId,
+      userInput: turn.userInput,
+      turnCount: this.memory.getTurns().length
+    });
+
+    this.triggerAutoSave();
+  }
+
+  /**
+   * Record a user preference
+   *
+   * Learns user preference and triggers auto-save if enabled.
+   *
+   * @param preference - User preference to record
+   *
+   * @example
+   * ```typescript
+   * await orchestrator.recordPreference({
+   *   type: 'provider',
+   *   value: 'vercel',
+   *   confidence: 0.9,
+   *   learnedAt: new Date().toISOString(),
+   *   occurrences: 3
+   * });
+   * ```
+   */
+  public async recordPreference(preference: UserPreference): Promise<void> {
+    await this.getOrCreateSession();
+
+    this.memory.recordPreference(preference);
+
+    this.logger.debug('Recorded user preference', {
+      sessionId: this.currentSessionId,
+      type: preference.type,
+      value: preference.value
+    });
+
+    this.triggerAutoSave();
+  }
+
+  /**
+   * Set project context for session
+   *
+   * @param context - Project context
+   */
+  public async setProjectContext(context: ProjectContext): Promise<void> {
+    await this.getOrCreateSession();
+
+    this.memory.setProjectContext(context);
+
+    this.logger.debug('Set project context', {
+      sessionId: this.currentSessionId,
+      path: context.path,
+      framework: context.framework
+    });
+
+    this.triggerAutoSave();
+  }
+
+  /**
+   * Get conversation memory instance
+   *
+   * Provides direct access to memory for reading preferences and history.
+   *
+   * @returns ConversationMemory instance
+   *
+   * @example
+   * ```typescript
+   * const memory = orchestrator.getMemory();
+   * const preferences = memory.getPreferences('provider');
+   * const turns = memory.getTurns();
+   * ```
+   */
+  public getMemory(): ConversationMemory {
+    return this.memory;
+  }
+
+  /**
+   * Get current turn count
+   *
+   * @returns Number of turns in current session
+   */
+  public getTurnCount(): number {
+    return this.memory.getTurns().length;
+  }
+
+  // ========================================
+  // Session Querying
+  // ========================================
+
+  /**
+   * List all available sessions
+   *
+   * @returns Array of session metadata
+   *
+   * @example
+   * ```typescript
+   * const sessions = await orchestrator.listSessions();
+   * sessions.forEach(s => console.log(s.sessionId, s.createdAt));
+   * ```
+   */
+  public async listSessions(): Promise<SessionMetadata[]> {
+    if (!this.persistence) {
+      this.logger.debug('Persistence not available - cannot list sessions');
+      return [];
+    }
+
+    try {
+      const listResult = await this.persistence.listSessions();
+
+      if (listResult.isFailure) {
+        this.logger.warn('Failed to list sessions', listResult.error);
+        return [];
+      }
+
+      return listResult.value!;
+    } catch (err) {
+      this.logger.error('Failed to list sessions', err instanceof Error ? err : new Error(String(err)));
+      return [];
+    }
+  }
+
+  /**
+   * Get resumable sessions (< 24 hours old)
+   *
+   * @returns Array of resumable session metadata
+   */
+  public async getResumableSessions(): Promise<SessionMetadata[]> {
+    if (!this.persistence) {
+      return [];
+    }
+
+    try {
+      const resumableResult = await this.persistence.listResumableSessions();
+
+      if (resumableResult.isFailure) {
+        this.logger.warn('Failed to get resumable sessions', resumableResult.error);
+        return [];
+      }
+
+      return resumableResult.value!;
+    } catch (err) {
+      this.logger.error('Failed to get resumable sessions', err instanceof Error ? err : new Error(String(err)));
+      return [];
+    }
+  }
+
+  // ========================================
+  // Utilities
+  // ========================================
+
+  /**
+   * Generate unique session ID
+   *
+   * Format: `session-${timestamp}-${random}`
+   *
+   * @private
+   * @returns Unique session ID
+   */
+  private generateSessionId(): string {
+    const timestamp = Date.now();
+    const random = Math.random().toString(36).substring(2, 9);
+    return `session-${timestamp}-${random}`;
+  }
+
+  /**
+   * Cleanup resources
+   *
+   * Call this when shutting down to ensure auto-save timer is cleared.
+   */
+  public destroy(): void {
+    if (this.autoSaveTimer) {
+      clearTimeout(this.autoSaveTimer);
+      this.autoSaveTimer = null;
+    }
+  }
+}
+
+// ILogger now imported from @aios/shared at top of file

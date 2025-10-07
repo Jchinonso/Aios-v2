@@ -12,6 +12,8 @@ import type { ParsedIntentType } from './types.js';
 
 export * from './types.js';
 export { ContextManager } from './context-manager.js';
+export { EnhancedNLProcessor } from './enhanced-nl-processor.js';
+export type { EnhancedClassificationResult } from './enhanced-nl-processor.js';
 
 /**
  * Parse natural language utterance into structured intent + CLI command

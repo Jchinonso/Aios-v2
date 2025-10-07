@@ -50,13 +50,25 @@ async function startBlessedSession(options: NLSessionOptionsType = {}): Promise<
   let pendingQuestion: string | null = null;
 
   // Initialize conversation orchestrator for rich multi-turn conversations
-  let conversationOrchestrator: any = null;
+  // Type-safe declaration - will be initialized on first use
+  let conversationOrchestrator: InstanceType<typeof import('./services/conversation-orchestrator-enhanced.js').EnhancedConversationOrchestrator> | null = null;
 
   await new Promise<void>((resolve) => {
     currentSession = new BlessedSession({
       onInput: async (input: string) => {
         if (isExitCommand(input)) {
           sessionActive = false;
+
+          // **Resource Cleanup**: Ensure proper cleanup on exit command
+          // This triggers final auto-save and clears timers
+          if (conversationOrchestrator) {
+            try {
+              await conversationOrchestrator.dispose();
+            } catch (error) {
+              console.error('Warning: Failed to cleanup conversation orchestrator:', error);
+            }
+          }
+
           currentSession?.destroy();
           resolve();
           return;
@@ -75,14 +87,61 @@ async function startBlessedSession(options: NLSessionOptionsType = {}): Promise<
             return;
           }
 
-          // Initialize conversation orchestrator on first use
+          // Initialize conversation orchestrator on first use (Phase 1 Enhanced with Memory)
           if (!conversationOrchestrator) {
-            const { ConversationOrchestrator } = await import('./services/conversation-orchestrator.js');
-            conversationOrchestrator = new ConversationOrchestrator(
+            const { EnhancedConversationOrchestrator } = await import('./services/conversation-orchestrator-enhanced.js');
+            const { SessionPersistence } = await import('./services/session-persistence.js');
+            const { ConversationMemory } = await import('./services/conversation-memory.v2.js');
+
+            // Create memory and persistence instances
+            const memory = new ConversationMemory(container.logger, undefined);
+            const persistence = new SessionPersistence(container.logger);
+
+            // Create enhanced orchestrator with memory integration
+            conversationOrchestrator = new EnhancedConversationOrchestrator(
               container.cloudManager,
               container.logger,
-              currentSession
+              currentSession,
+              memory,
+              persistence
             );
+
+            // Auto-resume most recent session if available
+            // This provides seamless continuation of conversations across CLI restarts
+            try {
+              const resumeResult = await persistence.getMostRecentResumableSession();
+
+              // Type-safe check with proper error handling
+              if (resumeResult.isSuccess && resumeResult.value) {
+                const sessionMeta = resumeResult.value;
+
+                // Validate session ID before attempting resume (security check)
+                const isValid = /^(aios-)?session-\d{13,}-[a-z0-9]{5,}$/.test(sessionMeta.sessionId);
+                if (!isValid) {
+                  container.logger.warn('Invalid session ID format detected during auto-resume', {
+                    sessionId: sessionMeta.sessionId
+                  });
+                  return; // Skip auto-resume if session ID is malformed
+                }
+
+                const resumed = await conversationOrchestrator.resumeSession(sessionMeta.sessionId);
+                if (resumed) {
+                  const truncatedId = sessionMeta.sessionId.substring(0, 16);
+                  currentSession?.addOutput(chalk.gray(`\n💾 Resumed previous session (${truncatedId}...)\n`));
+
+                  container.logger.info('Auto-resume successful', {
+                    sessionId: sessionMeta.sessionId,
+                    lastModified: sessionMeta.lastModified
+                  });
+                }
+              }
+            } catch (error) {
+              // Silent fail - auto-resume is a convenience feature, not critical
+              // Log for debugging but don't disrupt user experience
+              container.logger.debug('Auto-resume failed (non-critical)', {
+                error: error instanceof Error ? error.message : String(error)
+              });
+            }
           }
 
           // Check if we're waiting for an answer to a clarifying question
@@ -152,8 +211,121 @@ Respond with JSON format:
             }
           }
 
-          // Classify intent with full entity extraction
-          const result = await classifyIntentWithAI(input, aiService);
+          // **Enhanced NL Processing with Multi-Turn Context**
+          // Try to use EnhancedNLProcessor for better understanding with conversation context
+          let result: ParsedIntentType;
+
+          const nlProcessor = container.nlProcessor;
+
+          // Show thinking indicator
+          currentSession?.addOutput(chalk.gray('🤔 Analyzing your request...'));
+
+          if (nlProcessor) {
+            try {
+              // Use enhanced processor with memory and context awareness
+              const enhancedResult = await nlProcessor.process(input);
+
+              result = enhancedResult;
+
+              // **Display AI Reasoning** (if provided)
+              if (enhancedResult.reasoning) {
+                currentSession?.addOutput(chalk.cyan(`💡 ${enhancedResult.reasoning}`));
+              }
+
+              // **Display Warnings** (proactive issue detection)
+              if (enhancedResult.warnings && enhancedResult.warnings.length > 0) {
+                for (const warning of enhancedResult.warnings) {
+                  currentSession?.addOutput(chalk.yellow(`⚠️  ${warning}`));
+                }
+              }
+
+              container.logger.debug('Enhanced NL processing successful', {
+                intent: enhancedResult.intent,
+                hasReasoning: !!enhancedResult.reasoning,
+                warningCount: enhancedResult.warnings?.length || 0
+              });
+
+            } catch (enhancedError) {
+              // **Graceful Fallback** - If enhanced processing fails, use basic classification
+              container.logger.warn('Enhanced NL processing failed, falling back to basic', {
+                error: enhancedError instanceof Error ? enhancedError.message : String(enhancedError)
+              });
+
+              currentSession?.addOutput(chalk.gray('(Using basic intent classification)'));
+              result = await classifyIntentWithAI(input, aiService);
+            }
+          } else {
+            // EnhancedNLProcessor not available (AI service not configured)
+            // Fall back to basic classification
+            result = await classifyIntentWithAI(input, aiService);
+          }
+
+          // **Phase 2: Smart Intent Disambiguation & Defaults**
+          // Apply smart defaults and disambiguation after initial intent parsing
+          try {
+            if (conversationOrchestrator) {
+              const { IntentDisambiguator } = await import('./services/intent-disambiguator.js');
+              const { SmartDefaultsEngine } = await import('./services/smart-defaults.js');
+              const { FuzzyMatcher } = await import('./utils/fuzzy-matcher.js');
+
+              // Safe access to memory with runtime type checking
+              const memory = 'memory' in conversationOrchestrator
+                ? (conversationOrchestrator as any).memory
+                : null;
+
+              // Validate memory has required methods
+              const hasValidMemory =
+                memory &&
+                typeof memory === 'object' &&
+                typeof memory.getUserPriority === 'function' &&
+                typeof memory.getProjectContext === 'function' &&
+                typeof memory.getTurns === 'function';
+
+              if (!hasValidMemory) {
+                container.logger.warn('Conversation orchestrator missing valid memory - skipping Phase 2');
+                // Continue without Phase 2 enhancements (graceful degradation)
+              } else {
+                // 1. Apply smart defaults first
+                const smartDefaults = new SmartDefaultsEngine(container.logger);
+                const defaultsResult = smartDefaults.applyDefaults(result, memory);
+                result = defaultsResult.intent;
+
+                // Show default reasoning to user
+                for (const reason of defaultsResult.reasoning) {
+                  currentSession?.addOutput(chalk.gray(`💡 ${reason}`));
+                }
+
+                // 2. Disambiguate if confidence is low or parameters missing
+                const needsDisambiguation =
+                  result.confidence < 0.8 ||
+                  (result.intent === 'deploy' && (!result.entities.provider || !result.entities.env));
+
+                if (needsDisambiguation) {
+                  const fuzzyMatcher = new FuzzyMatcher();
+                  const disambiguator = new IntentDisambiguator(container.logger, fuzzyMatcher);
+                  const conversationHistory = memory.getTurns();
+
+                  const disambiguationResult = await disambiguator.disambiguate(result, conversationHistory);
+
+                  if (disambiguationResult.autoSelected) {
+                    // High confidence auto-selection
+                    result = disambiguationResult.autoSelected;
+                    currentSession?.addOutput(chalk.green(`✓ ${disambiguationResult.reasoning}`));
+                  } else if (disambiguationResult.alternatives.length > 0) {
+                    // Present options to user (future enhancement: interactive selection)
+                    // For now, use primary suggestion
+                    result = disambiguationResult.primarySuggestion;
+                    currentSession?.addOutput(chalk.cyan(`💡 ${disambiguationResult.reasoning}`));
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            // Graceful degradation - Phase 2 enhancement failed, but continue with parsed intent
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            container.logger.warn(`Phase 2 enhancement failed - continuing without: ${errorMsg}`);
+            // `result` remains unchanged from initial parse
+          }
 
           // Check if conversation orchestrator can handle this (for deployment flows)
           const orchestratorHandled = await conversationOrchestrator.processInput(input, result);
@@ -164,9 +336,6 @@ Respond with JSON format:
           }
 
           // Fall back to standard processing for non-conversational intents
-
-          // Show thinking indicator
-          currentSession?.addOutput(chalk.gray('🤔 Analyzing your request...'));
 
           // Show what we understood
           const confidenceColor = result.confidence > 0.8 ? chalk.green : result.confidence > 0.5 ? chalk.yellow : chalk.red;
@@ -215,8 +384,20 @@ Respond with JSON format:
           pendingQuestion = null;
         }
       },
-      onExit: () => {
+      onExit: async () => {
         sessionActive = false;
+
+        // **Resource Cleanup**: Properly dispose conversation orchestrator to prevent memory leaks
+        // This triggers final auto-save and cleans up timers
+        if (conversationOrchestrator) {
+          try {
+            await conversationOrchestrator.dispose();
+          } catch (error) {
+            // Log but don't throw - we're shutting down anyway
+            console.error('Warning: Failed to properly cleanup conversation orchestrator:', error);
+          }
+        }
+
         currentSession?.destroy();
         resolve();
       }

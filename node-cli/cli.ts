@@ -285,6 +285,26 @@ class AIOSCLIApplication {
         await this.handleStatus();
       });
 
+    // Session management commands (Phase 1 Integration)
+    const session = this.program
+      .command('session')
+      .description('Manage conversation sessions (resume, list)');
+
+    session
+      .command('resume [sessionId]')
+      .description('Resume a previous conversation session')
+      .action(async (sessionId?: string) => {
+        await this.handleResumeSession(sessionId);
+      });
+
+    session
+      .command('list')
+      .alias('ls')
+      .description('List all resumable conversation sessions')
+      .action(async () => {
+        await this.handleListSessions();
+      });
+
     // Note: Chat mode is now the default when no command is provided
     // No need for explicit 'chat' command
   }
@@ -431,6 +451,190 @@ class AIOSCLIApplication {
       console.error(chalk.red(`❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`));
       process.exit(1);
     }
+  }
+
+  /**
+   * Handle session resume command (Phase 1 Integration)
+   * Allows users to resume previous conversation sessions with full context
+   *
+   * **Security**:
+   * - Validates session ID format to prevent path traversal
+   * - Uses type-safe error handling with Result pattern
+   * - Graceful degradation on failures
+   *
+   * **Edge Cases**:
+   * - No sessions available → Helpful error message
+   * - Session expired between list and load → Graceful error
+   * - Invalid session ID format → Rejected with clear message
+   */
+  private async handleResumeSession(sessionId?: string): Promise<void> {
+    try {
+      const opts = this.program.opts();
+      const container = await ContainerFactory.getOrCreate({
+        debug: opts['debug'],
+        verbose: opts['verbose']
+      });
+
+      const { SessionPersistence } = await import('./services/session-persistence.js');
+      const persistence = new SessionPersistence(container.logger);
+
+      // If no session ID provided, list resumable sessions and pick most recent
+      if (!sessionId) {
+        const resumableResult = await persistence.listResumableSessions();
+
+        if (resumableResult.isFailure || !resumableResult.value || resumableResult.value.length === 0) {
+          console.log(chalk.yellow('\n⚠️  No resumable sessions found.\n'));
+          console.log(chalk.gray('Sessions are kept for 24 hours. Start a new conversation with: aios\n'));
+          return;
+        }
+
+        const sessions = resumableResult.value;
+
+        // Type-safe access - check before non-null assertion
+        const mostRecent = sessions[0];
+        if (!mostRecent) {
+          console.log(chalk.yellow('\n⚠️  No resumable sessions found.\n'));
+          return;
+        }
+
+        sessionId = mostRecent.sessionId;
+        console.log(chalk.gray(`\nResuming most recent session: ${sessionId.substring(0, 20)}...\n`));
+      }
+
+      // **Security**: Validate session ID format to prevent path traversal attacks
+      if (!this.isValidSessionId(sessionId)) {
+        console.log(chalk.red('\n❌ Invalid session ID format.\n'));
+        console.log(chalk.gray('Session IDs must match pattern: session-{timestamp}-{random}\n'));
+        return;
+      }
+
+      // Load the session (may fail if expired/deleted between list and load)
+      const loadResult = await persistence.loadSession(sessionId);
+
+      if (loadResult.isFailure) {
+        console.log(chalk.red(`\n❌ Failed to resume session: ${loadResult.error.message}\n`));
+        console.log(chalk.gray('The session may have expired or been deleted.\n'));
+        console.log(chalk.gray('Use "aios session list" to see available sessions\n'));
+        return;
+      }
+
+      const snapshot = loadResult.value;
+
+      console.log(chalk.green('✅ Session resumed successfully!\n'));
+      console.log(chalk.cyan('📊 Session Details:\n'));
+      console.log(chalk.white(`  Session ID:     ${sessionId}`));
+      console.log(chalk.white(`  Turns:          ${snapshot.turns.length}`));
+      console.log(chalk.white(`  Preferences:    ${snapshot.preferences.length}`));
+
+      if (snapshot.projectContext) {
+        console.log(chalk.white(`  Project:        ${snapshot.projectContext.path || 'Unknown'}`));
+        console.log(chalk.white(`  Framework:      ${snapshot.projectContext.framework || 'Unknown'}`));
+      }
+
+      console.log(chalk.gray('\n💡 Starting interactive session with restored context...\n'));
+
+      // Enter NL mode with resumed session
+      await this.enterNaturalLanguageMode();
+
+    } catch (error) {
+      console.error(chalk.red(`\n❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`));
+      process.exit(1);
+    }
+  }
+
+  /**
+   * Validate session ID format for security
+   * Prevents path traversal and injection attacks
+   *
+   * @param sessionId - Session ID to validate
+   * @returns True if valid format
+   *
+   * @example
+   * ```typescript
+   * isValidSessionId('session-1759701436504-t0ytkw') // true
+   * isValidSessionId('../../../etc/passwd') // false
+   * isValidSessionId('session-123') // false (missing random suffix)
+   * ```
+   */
+  private isValidSessionId(sessionId: string): boolean {
+    // Format: session-{timestamp}-{random} or aios-session-{timestamp}-{random}
+    const validPattern = /^(aios-)?session-\d{13,}-[a-z0-9]{5,}$/;
+
+    // Additional security checks
+    const hasPathTraversal = sessionId.includes('..') || sessionId.includes('/') || sessionId.includes('\\');
+    const hasNullByte = sessionId.includes('\0');
+
+    return validPattern.test(sessionId) && !hasPathTraversal && !hasNullByte;
+  }
+
+  /**
+   * Handle sessions list command (Phase 1 Integration)
+   * Shows all resumable conversation sessions
+   */
+  private async handleListSessions(): Promise<void> {
+    try {
+      const opts = this.program.opts();
+      const container = await ContainerFactory.getOrCreate({
+        debug: opts['debug'],
+        verbose: opts['verbose']
+      });
+
+      const { SessionPersistence } = await import('./services/session-persistence.js');
+      const persistence = new SessionPersistence(container.logger);
+
+      const resumableResult = await persistence.listResumableSessions();
+
+      if (resumableResult.isFailure) {
+        console.log(chalk.red(`\n❌ Failed to list sessions: ${resumableResult.error.message}\n`));
+        return;
+      }
+
+      const sessions = resumableResult.value;
+
+      if (!sessions || sessions.length === 0) {
+        console.log(chalk.yellow('\n📋 No resumable sessions found.\n'));
+        console.log(chalk.gray('Sessions are kept for 24 hours after last activity.\n'));
+        console.log(chalk.gray('Start a new conversation with: aios\n'));
+        return;
+      }
+
+      console.log(chalk.cyan('\n📋 Resumable Sessions:\n'));
+
+      for (let i = 0; i < sessions.length; i++) {
+        const session = sessions[i]!;
+        const relativeTime = this.formatRelativeTime(session.lastModified);
+        const sizeKB = (session.size / 1024).toFixed(1);
+
+        console.log(chalk.white(`${i + 1}. ${session.sessionId}`));
+        console.log(chalk.gray(`   Last active: ${relativeTime}`));
+        console.log(chalk.gray(`   Size: ${sizeKB} KB\n`));
+      }
+
+      console.log(chalk.gray('Use "aios session resume <sessionId>" to restore a session\n'));
+      console.log(chalk.gray('Or simply "aios session resume" to resume the most recent one\n'));
+
+    } catch (error) {
+      console.error(chalk.red(`\n❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}\n`));
+      process.exit(1);
+    }
+  }
+
+  /**
+   * Format relative time (helper for session listing)
+   */
+  private formatRelativeTime(date: Date): string {
+    const now = Date.now();
+    const then = date.getTime();
+    const diffMs = now - then;
+
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins} min${diffMins === 1 ? '' : 's'} ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
+    return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
   }
 
 
